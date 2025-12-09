@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +29,11 @@ const (
 	idleTimeout             = 60 * time.Second
 	contentTypeJSON         = "application/json"
 )
+
+var debugEnabled = func() bool {
+	v := strings.ToLower(os.Getenv("DEBUG"))
+	return v == "1" || v == "true" || v == "yes"
+}()
 
 type sessionRequest struct {
 	User                string `json:"user"`
@@ -132,6 +138,7 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	if rateLimit == 0 {
 		rateLimit = defaultRateLimitPerMin
 	}
+	debugf("creating session user=%s workflow_id=%s expires_after_seconds=%d rate_limit_per_minute=%d", payload.User, payload.WorkflowID, expiresAfter, rateLimit)
 
 	ctx, cancel := context.WithTimeout(r.Context(), openaiRequestTimeout)
 	defer cancel()
@@ -156,6 +163,7 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create session", http.StatusInternalServerError)
 		return
 	}
+	debugf("session created user=%s workflow_id=%s", payload.User, payload.WorkflowID)
 
 	w.Header().Set("Content-Type", contentTypeJSON)
 	w.WriteHeader(http.StatusOK)
@@ -169,4 +177,10 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func debugf(format string, args ...any) {
+	if debugEnabled {
+		log.Printf("[debug] "+format, args...)
+	}
 }
