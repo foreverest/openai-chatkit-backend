@@ -21,6 +21,7 @@ curl -X POST http://localhost:8080/api/chatkit/session \
 docker build -t chatkit-server .
 docker run --rm -p 8080:8080 -e OPENAI_API_KEY=$OPENAI_API_KEY chatkit-server
 ```
+The provided multi-stage Dockerfile produces a tiny (~10MB) scratch-based image.
 
 ## Endpoint
 - `POST /api/chatkit/session`
