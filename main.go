@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -17,17 +18,15 @@ import (
 )
 
 const (
-	defaultAddr             = ":8080"
-	defaultExpiresAfterSecs = int64(1200)
-	defaultRateLimitPerMin  = int64(10)
-	openaiRequestTimeout    = 15 * time.Second
-	serverShutdownTimeout   = 5 * time.Second
-	maxRequestBodyBytes     = 4096
-	readTimeout             = 10 * time.Second
-	readHeaderTimeout       = 5 * time.Second
-	writeTimeout            = 15 * time.Second
-	idleTimeout             = 60 * time.Second
-	contentTypeJSON         = "application/json"
+	defaultAddr           = ":8080"
+	openaiRequestTimeout  = 15 * time.Second
+	serverShutdownTimeout = 5 * time.Second
+	maxRequestBodyBytes   = 4096
+	readTimeout           = 10 * time.Second
+	readHeaderTimeout     = 5 * time.Second
+	writeTimeout          = 15 * time.Second
+	idleTimeout           = 60 * time.Second
+	contentTypeJSON       = "application/json"
 )
 
 var debugEnabled = func() bool {
@@ -36,27 +35,34 @@ var debugEnabled = func() bool {
 }()
 
 type sessionRequest struct {
-	User                string `json:"user"`
-	WorkflowID          string `json:"workflow_id"`
-	ExpiresAfterSeconds int64  `json:"expires_after_seconds"`
-	RateLimitPerMinute  int64  `json:"rate_limit_per_minute"`
+	User string `json:"user"`
 }
 
 type server struct {
-	createSession func(context.Context, openai.BetaChatKitSessionNewParams) (*openai.ChatSession, error)
+	createSession       func(context.Context, openai.BetaChatKitSessionNewParams) (*openai.ChatSession, error)
+	workflowID          string
+	expiresAfterSeconds int64
+	rateLimitPerMinute  int64
 }
 
 func main() {
 	addr := getEnv("ADDR", defaultAddr)
 
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		log.Fatal("OPENAI_API_KEY is required")
-	}
+	apiKey := requireEnv("OPENAI_API_KEY")
 
 	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
 	if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+
+	workflowID := requireEnv("CHATKIT_WORKFLOW_ID")
+	expiresAfterSeconds := requireEnvInt64("CHATKIT_EXPIRES_AFTER_SECONDS")
+	if expiresAfterSeconds < 0 {
+		log.Fatal("CHATKIT_EXPIRES_AFTER_SECONDS must be non-negative")
+	}
+	rateLimitPerMinute := requireEnvInt64("CHATKIT_RATE_LIMIT_PER_MINUTE")
+	if rateLimitPerMinute < 0 {
+		log.Fatal("CHATKIT_RATE_LIMIT_PER_MINUTE must be non-negative")
 	}
 
 	client := openai.NewClient(opts...)
@@ -65,6 +71,9 @@ func main() {
 		createSession: func(ctx context.Context, params openai.BetaChatKitSessionNewParams) (*openai.ChatSession, error) {
 			return client.Beta.ChatKit.Sessions.New(ctx, params)
 		},
+		workflowID:          workflowID,
+		expiresAfterSeconds: expiresAfterSeconds,
+		rateLimitPerMinute:  rateLimitPerMinute,
 	}
 
 	mux := http.NewServeMux()
@@ -121,28 +130,12 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	if payload.User == "" || payload.WorkflowID == "" {
-		http.Error(w, "user and workflow_id are required", http.StatusBadRequest)
-		return
-	}
-	if payload.ExpiresAfterSeconds < 0 {
-		http.Error(w, "expires_after_seconds must be non-negative", http.StatusBadRequest)
-		return
-	}
-	if payload.RateLimitPerMinute < 0 {
-		http.Error(w, "rate_limit_per_minute must be non-negative", http.StatusBadRequest)
+	if payload.User == "" {
+		http.Error(w, "user is required", http.StatusBadRequest)
 		return
 	}
 
-	expiresAfter := payload.ExpiresAfterSeconds
-	if expiresAfter == 0 {
-		expiresAfter = defaultExpiresAfterSecs
-	}
-	rateLimit := payload.RateLimitPerMinute
-	if rateLimit == 0 {
-		rateLimit = defaultRateLimitPerMin
-	}
-	debugf("creating session user=%s workflow_id=%s expires_after_seconds=%d rate_limit_per_minute=%d", payload.User, payload.WorkflowID, expiresAfter, rateLimit)
+	debugf("creating session user=%s workflow_id=%s expires_after_seconds=%d rate_limit_per_minute=%d", payload.User, s.workflowID, s.expiresAfterSeconds, s.rateLimitPerMinute)
 
 	ctx, cancel := context.WithTimeout(r.Context(), openaiRequestTimeout)
 	defer cancel()
@@ -150,14 +143,14 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	params := openai.BetaChatKitSessionNewParams{
 		User: payload.User,
 		Workflow: openai.ChatSessionWorkflowParam{
-			ID: payload.WorkflowID,
+			ID: s.workflowID,
 		},
 		ExpiresAfter: openai.ChatSessionExpiresAfterParam{
-			Seconds: expiresAfter,
+			Seconds: s.expiresAfterSeconds,
 			Anchor:  constant.CreatedAt("").Default(),
 		},
 		RateLimits: openai.ChatSessionRateLimitsParam{
-			MaxRequestsPer1Minute: openai.Int(rateLimit),
+			MaxRequestsPer1Minute: openai.Int(s.rateLimitPerMinute),
 		},
 	}
 
@@ -167,7 +160,7 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create session", http.StatusInternalServerError)
 		return
 	}
-	debugf("session created user=%s workflow_id=%s", payload.User, payload.WorkflowID)
+	debugf("session created user=%s workflow_id=%s", payload.User, s.workflowID)
 
 	w.Header().Set("Content-Type", contentTypeJSON)
 	w.WriteHeader(http.StatusOK)
@@ -181,6 +174,23 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func requireEnv(key string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	log.Fatalf("%s is required", key)
+	return ""
+}
+
+func requireEnvInt64(key string) int64 {
+	v := requireEnv(key)
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		log.Fatalf("%s must be an integer: %v", key, err)
+	}
+	return n
 }
 
 func debugf(format string, args ...any) {

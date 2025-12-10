@@ -30,9 +30,16 @@ func (f *fakeSessionCreator) Create(ctx context.Context, params openai.BetaChatK
 
 func TestHandleSessionDefaults(t *testing.T) {
 	fake := &fakeSessionCreator{clientSecret: "secret"}
-	srv := &server{createSession: fake.Create}
+	const expiresAfter = int64(1200)
+	const rateLimit = int64(10)
+	srv := &server{
+		createSession:       fake.Create,
+		workflowID:          "w",
+		expiresAfterSeconds: expiresAfter,
+		rateLimitPerMinute:  rateLimit,
+	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/chatkit/session", strings.NewReader(`{"user":"u","workflow_id":"w"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/chatkit/session", strings.NewReader(`{"user":"u"}`))
 	rec := httptest.NewRecorder()
 
 	srv.handleSession(rec, req)
@@ -43,11 +50,14 @@ func TestHandleSessionDefaults(t *testing.T) {
 	if !fake.called {
 		t.Fatalf("expected createSession to be called")
 	}
-	if fake.params.ExpiresAfter.Seconds != defaultExpiresAfterSecs {
-		t.Fatalf("expected default expires_after_seconds %d, got %d", defaultExpiresAfterSecs, fake.params.ExpiresAfter.Seconds)
+	if fake.params.Workflow.ID != "w" {
+		t.Fatalf("expected workflow_id w, got %s", fake.params.Workflow.ID)
 	}
-	if !fake.params.RateLimits.MaxRequestsPer1Minute.Valid() || fake.params.RateLimits.MaxRequestsPer1Minute.Value != defaultRateLimitPerMin {
-		t.Fatalf("expected default rate_limit_per_minute %d", defaultRateLimitPerMin)
+	if fake.params.ExpiresAfter.Seconds != expiresAfter {
+		t.Fatalf("expected expires_after_seconds %d, got %d", expiresAfter, fake.params.ExpiresAfter.Seconds)
+	}
+	if !fake.params.RateLimits.MaxRequestsPer1Minute.Valid() || fake.params.RateLimits.MaxRequestsPer1Minute.Value != rateLimit {
+		t.Fatalf("expected rate_limit_per_minute %d", rateLimit)
 	}
 
 	var resp map[string]string
@@ -61,9 +71,14 @@ func TestHandleSessionDefaults(t *testing.T) {
 
 func TestHandleSessionWithValues(t *testing.T) {
 	fake := &fakeSessionCreator{clientSecret: "secret2"}
-	srv := &server{createSession: fake.Create}
+	srv := &server{
+		createSession:       fake.Create,
+		workflowID:          "workflow-from-env",
+		expiresAfterSeconds: 30,
+		rateLimitPerMinute:  5,
+	}
 
-	body := `{"user":"u","workflow_id":"w","expires_after_seconds":30,"rate_limit_per_minute":5}`
+	body := `{"user":"u"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/chatkit/session", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
@@ -71,6 +86,9 @@ func TestHandleSessionWithValues(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if fake.params.Workflow.ID != "workflow-from-env" {
+		t.Fatalf("expected workflow_id workflow-from-env, got %s", fake.params.Workflow.ID)
 	}
 	if fake.params.ExpiresAfter.Seconds != 30 {
 		t.Fatalf("expected expires_after_seconds 30, got %d", fake.params.ExpiresAfter.Seconds)
@@ -86,19 +104,21 @@ func TestHandleSessionValidationErrors(t *testing.T) {
 		body       string
 		wantStatus int
 	}{
-		{"missing user", `{"workflow_id":"w"}`, http.StatusBadRequest},
-		{"missing workflow", `{"user":"u"}`, http.StatusBadRequest},
-		{"negative expiry", `{"user":"u","workflow_id":"w","expires_after_seconds":-1}`, http.StatusBadRequest},
-		{"negative rate", `{"user":"u","workflow_id":"w","rate_limit_per_minute":-1}`, http.StatusBadRequest},
+		{"missing user", `{}`, http.StatusBadRequest},
 		{"unknown field", `{"user":"u","workflow_id":"w","foo":1}`, http.StatusBadRequest},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := &server{createSession: func(ctx context.Context, params openai.BetaChatKitSessionNewParams) (*openai.ChatSession, error) {
-				t.Fatalf("createSession should not be called")
-				return nil, nil
-			}}
+			srv := &server{
+				createSession: func(ctx context.Context, params openai.BetaChatKitSessionNewParams) (*openai.ChatSession, error) {
+					t.Fatalf("createSession should not be called")
+					return nil, nil
+				},
+				workflowID:          "w",
+				expiresAfterSeconds: 1200,
+				rateLimitPerMinute:  10,
+			}
 			req := httptest.NewRequest(http.MethodPost, "/api/chatkit/session", strings.NewReader(tc.body))
 			rec := httptest.NewRecorder()
 
