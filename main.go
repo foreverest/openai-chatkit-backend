@@ -43,7 +43,7 @@ type sessionRequest struct {
 }
 
 type server struct {
-	client openai.Client
+	createSession func(context.Context, openai.BetaChatKitSessionNewParams) (*openai.ChatSession, error)
 }
 
 func main() {
@@ -59,8 +59,12 @@ func main() {
 		opts = append(opts, option.WithBaseURL(baseURL))
 	}
 
+	client := openai.NewClient(opts...)
+
 	s := &server{
-		client: openai.NewClient(opts...),
+		createSession: func(ctx context.Context, params openai.BetaChatKitSessionNewParams) (*openai.ChatSession, error) {
+			return client.Beta.ChatKit.Sessions.New(ctx, params)
+		},
 	}
 
 	mux := http.NewServeMux()
@@ -157,7 +161,7 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	session, err := s.client.Beta.ChatKit.Sessions.New(ctx, params)
+	session, err := s.createSession(ctx, params)
 	if err != nil {
 		log.Printf("failed to create session: %v", err)
 		http.Error(w, "failed to create session", http.StatusInternalServerError)
