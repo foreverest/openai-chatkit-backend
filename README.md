@@ -9,8 +9,9 @@ Minimal Go HTTP server exposing a ChatKit session creation endpoint backed by th
   - `CHATKIT_WORKFLOW_ID`: ChatKit workflow ID the server will use for every session.
   - `CHATKIT_EXPIRES_AFTER_SECONDS`: Lifetime (seconds) to set on each created session.
   - `CHATKIT_RATE_LIMIT_PER_MINUTE`: Per-minute request limit to set on each created session.
+  - `CORS_ALLOWED_ORIGINS`: Comma-separated list of origins allowed for browser clients (e.g. `https://app.example.com,https://admin.example.com` or `*` to allow all).
 - Optional: `OPENAI_BASE_URL` to point at a mock or custom endpoint
-> These values must be provided explicitly; there are no defaults for expiry or rate limits.
+> These values must be provided explicitly; there are no defaults for expiry, rate limits, or CORS origins.
 
 ## Run locally
 ```bash
@@ -18,6 +19,7 @@ export OPENAI_API_KEY=sk-...
 export CHATKIT_WORKFLOW_ID=workflow-abc
 export CHATKIT_EXPIRES_AFTER_SECONDS=1200
 export CHATKIT_RATE_LIMIT_PER_MINUTE=10
+export CORS_ALLOWED_ORIGINS=*
 go run .
 # then
 curl -X POST http://localhost:8080/api/chatkit/session \
@@ -32,6 +34,7 @@ docker run --rm -p 8080:8080 \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
   -e CHATKIT_WORKFLOW_ID=$CHATKIT_WORKFLOW_ID \
   -e CHATKIT_EXPIRES_AFTER_SECONDS=$CHATKIT_EXPIRES_AFTER_SECONDS \
+  -e CORS_ALLOWED_ORIGINS=$CORS_ALLOWED_ORIGINS \
   -e CHATKIT_RATE_LIMIT_PER_MINUTE=$CHATKIT_RATE_LIMIT_PER_MINUTE \
   chatkit-server
 ```

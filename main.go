@@ -84,9 +84,11 @@ func main() {
 	})
 	mux.HandleFunc("/api/chatkit/session", s.handleSession)
 
+	corsPolicy := newCORSPolicy(requireEnv("CORS_ALLOWED_ORIGINS"))
+
 	httpServer := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           withCORS(corsPolicy, mux),
 		ReadTimeout:       readTimeout,
 		ReadHeaderTimeout: readHeaderTimeout,
 		WriteTimeout:      writeTimeout,
