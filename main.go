@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
-	"github.com/openai/openai-go/v3/shared/constant"
 )
 
 const (
@@ -33,17 +31,6 @@ var debugEnabled = func() bool {
 	v := strings.ToLower(os.Getenv("DEBUG"))
 	return v == "1" || v == "true" || v == "yes"
 }()
-
-type sessionRequest struct {
-	User string `json:"user"`
-}
-
-type server struct {
-	createSession       func(context.Context, openai.BetaChatKitSessionNewParams) (*openai.ChatSession, error)
-	workflowID          string
-	expiresAfterSeconds int64
-	rateLimitPerMinute  int64
-}
 
 func main() {
 	addr := getEnv("ADDR", defaultAddr)
@@ -67,22 +54,16 @@ func main() {
 
 	client := openai.NewClient(opts...)
 
-	s := &server{
-		createSession: func(ctx context.Context, params openai.BetaChatKitSessionNewParams) (*openai.ChatSession, error) {
+	sessionHandler := newSessionHandler(
+		func(ctx context.Context, params openai.BetaChatKitSessionNewParams) (*openai.ChatSession, error) {
 			return client.Beta.ChatKit.Sessions.New(ctx, params)
 		},
-		workflowID:          workflowID,
-		expiresAfterSeconds: expiresAfterSeconds,
-		rateLimitPerMinute:  rateLimitPerMinute,
-	}
+		workflowID,
+		expiresAfterSeconds,
+		rateLimitPerMinute,
+	)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
-	mux.HandleFunc("/api/chatkit/session", s.handleSession)
+	mux := newRouter(sessionHandler)
 
 	corsPolicy := newCORSPolicy(requireEnv("CORS_ALLOWED_ORIGINS"))
 
@@ -112,62 +93,6 @@ func main() {
 		log.Printf("graceful shutdown failed: %v", err)
 	} else {
 		log.Println("server stopped")
-	}
-}
-
-func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
-
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
-
-	var payload sessionRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&payload); err != nil {
-		http.Error(w, "invalid JSON", http.StatusBadRequest)
-		return
-	}
-	if payload.User == "" {
-		http.Error(w, "user is required", http.StatusBadRequest)
-		return
-	}
-
-	debugf("creating session user=%s workflow_id=%s expires_after_seconds=%d rate_limit_per_minute=%d", payload.User, s.workflowID, s.expiresAfterSeconds, s.rateLimitPerMinute)
-
-	ctx, cancel := context.WithTimeout(r.Context(), openaiRequestTimeout)
-	defer cancel()
-
-	params := openai.BetaChatKitSessionNewParams{
-		User: payload.User,
-		Workflow: openai.ChatSessionWorkflowParam{
-			ID: s.workflowID,
-		},
-		ExpiresAfter: openai.ChatSessionExpiresAfterParam{
-			Seconds: s.expiresAfterSeconds,
-			Anchor:  constant.CreatedAt("").Default(),
-		},
-		RateLimits: openai.ChatSessionRateLimitsParam{
-			MaxRequestsPer1Minute: openai.Int(s.rateLimitPerMinute),
-		},
-	}
-
-	session, err := s.createSession(ctx, params)
-	if err != nil {
-		log.Printf("failed to create session: %v", err)
-		http.Error(w, "failed to create session", http.StatusInternalServerError)
-		return
-	}
-	debugf("session created user=%s workflow_id=%s", payload.User, s.workflowID)
-
-	w.Header().Set("Content-Type", contentTypeJSON)
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(map[string]string{"client_secret": session.ClientSecret}); err != nil {
-		log.Printf("failed to write response: %v", err)
 	}
 }
 

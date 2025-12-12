@@ -32,17 +32,12 @@ func TestHandleSessionDefaults(t *testing.T) {
 	fake := &fakeSessionCreator{clientSecret: "secret"}
 	const expiresAfter = int64(1200)
 	const rateLimit = int64(10)
-	srv := &server{
-		createSession:       fake.Create,
-		workflowID:          "w",
-		expiresAfterSeconds: expiresAfter,
-		rateLimitPerMinute:  rateLimit,
-	}
+	handler := newSessionHandler(fake.Create, "w", expiresAfter, rateLimit)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chatkit/session", strings.NewReader(`{"user":"u"}`))
 	rec := httptest.NewRecorder()
 
-	srv.handleSession(rec, req)
+	handler.handleSession(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
@@ -71,18 +66,13 @@ func TestHandleSessionDefaults(t *testing.T) {
 
 func TestHandleSessionWithValues(t *testing.T) {
 	fake := &fakeSessionCreator{clientSecret: "secret2"}
-	srv := &server{
-		createSession:       fake.Create,
-		workflowID:          "workflow-from-env",
-		expiresAfterSeconds: 30,
-		rateLimitPerMinute:  5,
-	}
+	handler := newSessionHandler(fake.Create, "workflow-from-env", 30, 5)
 
 	body := `{"user":"u"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/chatkit/session", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
-	srv.handleSession(rec, req)
+	handler.handleSession(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rec.Code)
@@ -110,19 +100,14 @@ func TestHandleSessionValidationErrors(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := &server{
-				createSession: func(ctx context.Context, params openai.BetaChatKitSessionNewParams) (*openai.ChatSession, error) {
-					t.Fatalf("createSession should not be called")
-					return nil, nil
-				},
-				workflowID:          "w",
-				expiresAfterSeconds: 1200,
-				rateLimitPerMinute:  10,
-			}
+			handler := newSessionHandler(func(ctx context.Context, params openai.BetaChatKitSessionNewParams) (*openai.ChatSession, error) {
+				t.Fatalf("createSession should not be called")
+				return nil, nil
+			}, "w", 1200, 10)
 			req := httptest.NewRequest(http.MethodPost, "/api/chatkit/session", strings.NewReader(tc.body))
 			rec := httptest.NewRecorder()
 
-			srv.handleSession(rec, req)
+			handler.handleSession(rec, req)
 
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("expected status %d, got %d", tc.wantStatus, rec.Code)
